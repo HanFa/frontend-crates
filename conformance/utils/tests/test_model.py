@@ -116,6 +116,9 @@ def _peer_versions(tree: str) -> dict[str, set[str]]:
 
 # Labels and structured metadata must identify the same captured version.
 def _assert_candidate_versioned(candidate, location):
+    if candidate.get("parse_mode") == "unified" and candidate.get("impl") == "dynamo":
+        assert candidate["label"] == table._full_label("dynamo_v2", candidate["version"], "stream"), location
+        return
     version = table._version_of_label(candidate["label"])
     assert version, f"{location}: unversioned candidate {candidate['label']!r}"
     assert candidate["version"] == version
@@ -314,11 +317,11 @@ def test_unified_default_dynamo_keeps_semantic_capture_keys_and_release_history_
 
     requested = dynamo_v2_label(REPO)
     assert dynamo["version"] == requested
-    assert dynamo["label"].startswith(f"Dynamo v2 Rust {requested} ")
+    assert dynamo["label"] == table._full_label("dynamo_v2", requested, "stream")
     assert "+source." not in dynamo["label"]
     assert all("+source." not in candidate["key"] for candidate in tab["candidates"])
     assert dynamo["default_bucket"] == "A"
-    assert release["label"] == "Dynamo v2 Rust 0.6.0 (stream, Combined & Unified)"
+    assert release["label"] == table._full_label("dynamo_v2", "0.6.0", "stream")
     assert release["default_bucket"] == "C"
 
 
@@ -374,7 +377,7 @@ process.stdout.write(JSON.stringify(tips.map(tip => context.window.audit.buildTo
     assert all("request tool schema declares" in markup for markup in rendered)
     assert all("non-nullable" in markup or "string | null" in markup for markup in rendered)
 
-    assert [markup.count('class="case-variant"') for markup in rendered] == [7, 5]
+    assert [markup.count('class="case-variant"') for markup in rendered] == [8, 5]
     assert "nullable: true" in rendered[1]
     assert "intersection" in rendered[0]
 
@@ -760,7 +763,8 @@ def test_unified_source_selection_inherits_previous_family_capture(
     tab = table._unified_tab_model(tmp_path, {})
     candidates = {candidate["key"]: candidate for candidate in tab["candidates"]}
     assert candidates["dynamo"]["version"] == selected
-    assert candidates["dynamo"]["label"] == "Dynamo v2 Rust 0.6.1 (stream, Combined & Unified)"
+    assert candidates["dynamo"]["label"] == table._full_label("dynamo_v2", selected, "stream")
+    assert candidates[f"dynamo@{previous}"]["label"] == table._full_label("dynamo_v2", previous, "stream")
     assert {key for key in candidates if key.startswith("dynamo@")} == {f"dynamo@{previous}"}
     cell = next(row for row in tab["rows"] if row["family"] == family)["cells"][scenario]
     current = next(candidate for candidate in cell["tooltip"]["candidates"] if candidate["key"] == "dynamo")
@@ -780,8 +784,8 @@ def test_unified_source_selection_inherits_previous_family_capture(
 
 @pytest.mark.parametrize("impl,version,mode,want", [
     ("dynamo_v2", "0.6.0", "stream",
-     "Dynamo v2 Rust 0.6.0 (stream)"),
-    ("dynamo_v2", "0.6.1", "stream", "Dynamo v2 Rust 0.6.1 (stream)"),
+     "Dynamo v2 Rust 0.6.0 (stream, Combined & Unified)"),
+    ("dynamo_v2", "0.6.1", "stream", "Dynamo v2 Rust 0.6.1 (stream, Combined & Unified)"),
     ("dynamo_v1", "8.2.2", "stream", "Dynamo v1 Rust 8.2.2 (jail+batch)"),
     ("vllm_python", "0.26.0", "batch", "vLLM Python 0.26.0 (batch)"),
 ])
@@ -789,13 +793,14 @@ def test_candidate_label_keeps_capture_identity_out_of_display(impl, version, mo
     assert table._full_label(impl, version, mode) == want
 
 
-@pytest.mark.parametrize("mode", ["stream", "stream, Combined & Unified"])
-def test_unpublished_current_label_projects_existing_producer_identity(monkeypatch, mode):
+@pytest.mark.parametrize("input_mode", ["stream", "stream, Combined & Unified"])
+def test_current_label_is_stable_before_and_after_release(monkeypatch, input_mode):
     producer = {"crate_version": "0.7.9", "kind": "unpublished", "source_id": "sha256:abc123"}
     monkeypatch.setattr(table, "_dynamo_v2_producer", lambda: producer)
-    label = table._full_label("dynamo_v2", "0.7.9", mode)
-    assert label == f"Dynamo v2 Rust 0.7.9 [unpublished sha256:abc123] ({mode})"
-    previous = table._full_label("dynamo_v2", "0.7.8", mode)
+    mode = "stream, Combined & Unified"
+    label = table._full_label("dynamo_v2", "0.7.9", input_mode)
+    assert label == f"Dynamo v2 Rust 0.7.9 ({mode})"
+    previous = table._full_label("dynamo_v2", "0.7.8", input_mode)
     assert previous == f"Dynamo v2 Rust 0.7.8 ({mode})"
     assert table._candidate_name_key(label) == table._candidate_name_key(previous) == "dynamo v2 rust"
     assert table._version_of_label(label) == "0.7.9"
@@ -806,20 +811,28 @@ def test_unpublished_current_label_projects_existing_producer_identity(monkeypat
             ("current", "0.7.9"), ("previous", "0.7.8"),
         ]
     producer["kind"] = "release"
-    assert table._full_label("dynamo_v2", "0.7.9", mode) == f"Dynamo v2 Rust 0.7.9 ({mode})"
+    assert table._full_label("dynamo_v2", "0.7.9", input_mode) == f"Dynamo v2 Rust 0.7.9 ({mode})"
 
 
-def test_current_dynamo_display_identifies_the_measured_producer(model_v2):
+def test_unified_dynamo_labels_identify_stream_combined_and_unified(model_v2):
     producer = table._dynamo_v2_producer()
-    labels = [candidate["label"] for tab in model_v2["tabs"] for candidate in tab["candidates"]
-              if candidate.get("version") == producer["crate_version"]
-              and candidate["label"].startswith("Dynamo v2 Rust ")]
-    assert labels
-    for label in labels:
-        if producer["kind"] == "unpublished":
-            assert f"[unpublished {producer['source_id']}]" in label
-        else:
-            assert "[unpublished" not in label
+    tab = _tab(model_v2, "tab-unified")
+    reference = next(candidate for candidate in tab["candidates"] if candidate["key"] == "dynamo")
+    expected = producer["crate_version"]
+    full_label = f"Dynamo v2 Rust {expected} (stream, Combined & Unified)"
+    assert reference["label"] == full_label
+    assert reference["label_html"] == full_label
+    assert reference["version"] == producer["crate_version"]
+
+    tooltip_labels = [
+        candidate["label"]
+        for row in tab["rows"]
+        for cell in leaf_cells(row).values()
+        for candidate in cell.get("tooltip", {}).get("candidates", [])
+        if candidate["key"] == "dynamo" and candidate.get("version") == producer["crate_version"]
+    ]
+    assert tooltip_labels
+    assert set(tooltip_labels) == {full_label}
 
 
 def test_tc_source_capture_versions_survive_label_parsing():
@@ -1145,6 +1158,45 @@ def test_unified_argument_edge_cases_have_current_captures(model_v2, family):
             assert cell["case_id"] == ("UNIFIED.7-5" if scenario == "arg_string_null" else "UNIFIED.7-4")
 
 
+def _assert_unmeasured_versions(cmp: dict, candidate_keys: list[str]) -> None:
+    for key in candidate_keys:
+        result = cmp[key]
+        assert result["na"] == 1 and result["sig"] == 0, key
+
+
+def test_shared_reference_cases_keep_older_peer_captures_unmeasured(model_v2: dict) -> None:
+    tab = _tab(model_v2, "tab-unified")
+    dynamo_candidates = [candidate for candidate in tab["candidates"] if candidate.get("impl") == "dynamo"]
+    current = next(candidate for candidate in dynamo_candidates if candidate["key"] == "dynamo")
+    current_version = tuple(map(int, current["version"].split(".")))
+    older_keys = [
+        candidate["key"]
+        for candidate in dynamo_candidates
+        if candidate["key"] != "dynamo"
+        and tuple(map(int, candidate["version"].split("."))) < current_version
+    ]
+    assert current["version"] == "0.7.18"
+    scenarios = (
+        "glm_ref_object",
+        "glm_ref_encoded_targets",
+        "glm_ref_json_looking_strings",
+        "glm_ref_scalar_types",
+    )
+    peer_families = {"deepseek_v4", "deepseek_v41", "gemma4", "kimi_k2", "kimi_k3", "muse_glimmer", "qwen3"}
+    for row in tab["rows"]:
+        family = row["family"]
+        for scenario in scenarios:
+            cmp = leaf_cells(row)[scenario]["cmp"]
+            assert cmp["dynamo"]["na"] == 0, (family, scenario, "current")
+            if family in peer_families:
+                _assert_unmeasured_versions(cmp, older_keys)
+            else:
+                assert cmp["dynamo@0.7.8"]["na"] == 0, (family, scenario, "original_capture")
+
+    with pytest.raises(AssertionError):
+        _assert_unmeasured_versions({"dynamo@0.7.17": {"na": 0, "sig": 1}}, ["dynamo@0.7.17"])
+
+
 @pytest.mark.parametrize("scenario,sub,arguments", [
     ("glm_ref_object", "7-9", {"payload": {"x": 1}}),
     ("glm_ref_encoded_targets", "7-11", {"space": 42, "utf8_plus": 42, "pointer": 42}),
@@ -1183,8 +1235,36 @@ def test_glm_type_references_have_typed_current_batch_and_unified_captures(
     events = [{"kind": "tool_call", **call} for call in calls]
     assert blocks["golden"]["events"] == blocks["dynamo"]["events"] == events
     assert cell_state(cell, {"key": "dynamo", "label": "Dynamo"})[0] == "green"
-    assert all(other["cells"][scenario]["status"] == "na"
-               for other in unified["rows"] if other.get("family") and other["family"] != "glm47")
+    families = {"deepseek_v4", "deepseek_v41", "gemma4", "glm47",
+                "kimi_k2", "kimi_k3", "muse_glimmer", "qwen3"}
+    rows = {other["family"]: other for other in unified["rows"] if other.get("family")}
+    assert rows.keys() == families
+    for family, other in rows.items():
+        shared = leaf_cells(other)[scenario]
+        assert shared["case_id"] == f"UNIFIED.{sub}"
+        assert shared["status"] != "na"
+        candidates = {candidate["key"]: candidate["block"]
+                      for candidate in shared["tooltip"]["candidates"]}
+        assert candidates["golden"]["events"] == events
+        measured = candidates["dynamo"]
+        assert "error" not in measured and "unavailable" not in measured
+        assert measured["events"], family
+        expected_color = "green" if measured["events"] == events else "red"
+        assert cell_state(shared, {"key": "dynamo", "label": "Dynamo"})[0] == expected_color
+        assert "without proving reference resolution" in shared["tooltip"]["description"]
+        if family != "glm47":
+            for candidate in shared["tooltip"]["candidates"]:
+                if not candidate["key"].startswith("dynamo@"):
+                    continue
+                version = tuple(map(int, candidate["key"].split("@", 1)[1].split(".")))
+                if version < (0, 7, 16):
+                    assert "unavailable" in candidate["block"]
+                    assert "not captured at" in candidate["block"]["unavailable"]
+                    assert "events" not in candidate["block"]
+                    state, reason = cell_state(shared, candidate)
+                    assert state == "empty"
+                    assert "has no captured result" in reason
+
 
 
 def test_historical_unified_mismatch_does_not_claim_the_parser_is_missing(model_v2):
@@ -1324,7 +1404,8 @@ def test_null_groups_keep_every_schema_variant_and_mixed_probe(model_v2: dict, t
         for label, count in (("7-4", 5), ("7-5", 7)):
             sub = next(col["sub"] for col in tab["columns"] if col["label"] == label)
             cell = row["cells"][sub]
-            assert len(cell["variants"]) == count + int(mixed) + int(refs)
+            qwen_ref = tab_id == "tab-unified" and row["family"] == "qwen3" and label == "7-5"
+            assert len(cell["variants"]) == count + int(mixed) + int(refs) + int(qwen_ref)
             assert all("golden" in leaf["cmp"] for leaf in cell["variants"])
             groups.append({leaf["sub"] for leaf in cell["variants"]})
             if tab_id.endswith("streamv1"):
@@ -1332,3 +1413,23 @@ def test_null_groups_keep_every_schema_variant_and_mixed_probe(model_v2: dict, t
                     for key in ("dynamo_v1-9-1-0", "dynamo_v2-0-7-4"):
                         assert leaf["cmp"][key]["na"] == 0
         assert len(groups[0] & groups[1]) == int(mixed)
+
+
+def test_unified_deepseek_only_case_keeps_id_in_family_section(model_v2):
+    scenario = "guided_response_rejected_header_quote_ownership"
+    tab = _tab(model_v2, "tab-unified")
+    column = next(c for c in tab["columns"] if c["sub"] == scenario)
+    assert column["label"] == "35-5"
+    assert column["group_key"] == "unified_gdeepseek_v4"
+    group = next(g for g in tab["column_groups"] if g["key"] == column["group_key"])
+    assert group["label"] == "DeepSeek V4-specific tests"
+    assert group["span"] == 1
+    assert table.unified_taxonomy.numbered_id(scenario) == "UNIFIED.35-5"
+    assert set(table.gen_unified_golden.scenario_families(scenario)) == {"deepseek_v4"}
+    for row in tab["rows"]:
+        cell = row["cells"][scenario]
+        assert cell["col_group"] == column["group_key"]
+        if row["family"] != "deepseek_v4":
+            assert cell["status"] == "na"
+    glossary = next(g for g in tab["glossary"] if g["label"] == group["label"])
+    assert [r[0] for r in glossary["rows"]] == ["35-5"]
