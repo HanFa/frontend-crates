@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "dynamo-renderer"
-version = "7.0.1"
+version = "7.0.2"
 dependencies = [
  "anyhow",
  "chrono",
