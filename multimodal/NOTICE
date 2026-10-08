@@ -1,0 +1,8 @@
+dynamo-multimodal
+Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+The media decoding implementation was extracted from ai-dynamo/dynamo,
+lib/llm/src/preprocessor/media, revision 16b2ae50032edbdde70a9e03a7e7056fac3b7c7d.
+Both projects distribute this code under the Apache License, Version 2.0.
+The optional video feature links the consumer-provided FFmpeg shared libraries.
+See README.md for native dependencies and distribution requirements.

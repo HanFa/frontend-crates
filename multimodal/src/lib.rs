@@ -31,6 +31,7 @@ pub mod execution;
 #[cfg(feature = "fetch")]
 pub mod fetch;
 pub mod image;
+pub mod media;
 pub mod models;
 pub mod processor;
 pub mod registry;

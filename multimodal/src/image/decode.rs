@@ -185,7 +185,22 @@ pub fn dimensions(data: &[u8]) -> Result<(usize, usize)> {
 }
 
 fn format(data: &[u8]) -> Result<ImageFormat> {
-    image::guess_format(data).map_err(invalid("unrecognized image format"))
+    let format = image::guess_format(data).map_err(invalid("unrecognized image format"))?;
+    // Cargo features are additive. The media decoder must not widen this
+    // Pillow-compatible API's accepted formats when both are linked.
+    if !matches!(
+        format,
+        ImageFormat::Jpeg
+            | ImageFormat::Png
+            | ImageFormat::WebP
+            | ImageFormat::Gif
+            | ImageFormat::Bmp
+    ) {
+        let error =
+            image::ImageError::Unsupported(image::error::ImageFormatHint::Exact(format).into());
+        return Err(invalid("image probe failed")(error));
+    }
+    Ok(format)
 }
 
 fn invalid<E>(context: &'static str) -> impl Fn(E) -> MmError

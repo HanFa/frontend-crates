@@ -25,3 +25,13 @@ allow = [
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+
+# Existing Dynamo bindings to consumer-provided shared FFmpeg, not FFmpeg's
+# native license. Keep these exceptions scoped to the two binding crates.
+[[licenses.exceptions]]
+name = "ffmpeg-next"
+allow = ["WTFPL"]
+
+[[licenses.exceptions]]
+name = "ffmpeg-sys-next"
+allow = ["WTFPL"]

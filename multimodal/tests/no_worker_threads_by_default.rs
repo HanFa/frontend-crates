@@ -35,6 +35,16 @@ fn resizing_spawns_no_worker_threads_while_unarmed() {
     let out = resize_rgb(&src, 48, 64, 24, 32, Resample::AtenU8);
     assert_eq!(out.len(), 24 * 32 * 3);
 
+    #[cfg(feature = "media-decode")]
+    {
+        use dynamo_multimodal::media::image::{ImageOptions, decode_images};
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        decode_images(&[bytes.into_inner()], &ImageOptions::default()).unwrap();
+    }
+
     let after = thread_names();
     let spawned: Vec<&String> = after.iter().filter(|t| t.starts_with("dyn-mm")).collect();
     assert!(

@@ -41,7 +41,7 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CARGO_DENY_VERSION: "0.19.4"
       CARGO_MACHETE_VERSION: "0.9.2"
@@ -57,6 +57,26 @@ jobs:
 
       - name: Install Rust
         run: rustup toolchain install
+
+      - name: Install native media build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm yasm pkg-config libclang-dev
+
+      - name: Test image-only configurations before installing FFmpeg
+        run: |
+          cargo test -p dynamo-multimodal --no-default-features --locked
+          cargo test -p dynamo-multimodal --no-default-features --features media-decode --locked
+
+      - name: Build restricted shared FFmpeg for optional video tests
+        run: |
+          sudo apt-get install -y libturbojpeg0
+          bash multimodal/build-ffmpeg.sh "$RUNNER_TEMP/media-native"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/media-native/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/media-native/lib" >> "$GITHUB_ENV"
+
+      - name: Test independent media with native backends
+        env:
+          DYNAMO_REQUIRE_LIBJPEG_TURBO_TEST: "1"
+        run: cargo test -p dynamo-multimodal --all-features --locked
 
       - name: Cache cargo tools
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4

@@ -14,6 +14,8 @@ against the mirrored HF processor.
 | feature    | default | adds |
 | ---------- | ------- | ---- |
 | `parallel` | **on**  | links rayon; kernels still run inline until `execution::init_pool` arms the crate-owned pool |
+| `media-decode` | off | Dynamo-compatible image pixels, byte allocation limits, and optional system TurboJPEG with ImageReader fallback |
+| `video` | off | Linux video decoding through shared FFmpeg libraries; independent of `media-decode` |
 | `fetch`    | off     | trusted-source data:/base64/file/http compatibility helper (**signatures only so far**); API frontends should use their protected fetcher for untrusted URLs |
 
 **The boundary.** The crate carries what HF ships, plus what a router and an
@@ -83,6 +85,102 @@ they should leave the crate pool unarmed to avoid nested parallelism.
 host-side concurrency (for example, a Python binding). Repeating the resolved
 thread count is a no-op; requesting a different count returns
 `MmError::InvalidInput`.
+
+## Owned media decoding
+
+`media::image::decode_image` accepts encoded bytes and `ImageOptions` and
+returns an owned `Vec<u8>` with width, height, source format and pixel format.
+It preserves Dynamo's L/LA/RGB/RGBA channels, image-crate depth conversion,
+128 MiB default allocation limit, and JPEG backend fallback. Set options
+explicitly after resolving application configuration; the crate reads no
+environment variables. `require_libjpeg` makes a declined JPEG return a
+`JpegFallbackRequired` error before fallback. Resource-limit failures never
+trigger fallback.
+
+The existing `image::decode::decode_rgb` API retains its Pillow-compatible
+RGB output, five accepted formats, high-depth rejection and header limits.
+Enabling `media-decode` does not expand those accepted formats.
+
+`media::video::decode_video` takes owned encoded bytes and `VideoOptions` and
+returns owned NHWC RGB pixels, dimensions, frame count, source FPS/duration,
+and sampled timestamps. Its 512 MiB default output limit, sampling arithmetic,
+strict/lenient handling and errors follow Dynamo's original decoder. Video
+currently requires Linux memfd and `/proc/self/fd`; image-only use does not.
+
+The `decode_images` and `decode_videos` helpers preserve successful input
+ordering and use `execution::try_map`. They run inline unless the consumer
+explicitly calls `execution::init_pool`. On a batch failure, which error is
+returned is unspecified and other items may already have run. Async servers
+must offload these synchronous APIs. Hosts such as Dynamo that already use a
+CPU executor should leave this crate's pool unarmed; no second pool is needed.
+Returned buffers are independent of input storage and decoder handles.
+
+Protected fetching, runtime-option precedence, wire schemas, cancellation,
+request admission, content hashing and NIXL storage/registration remain host
+responsibilities. These APIs do not depend on Dynamo's runtime or NIXL.
+
+### Installation and native dependencies
+
+After publication, depend on the released `dynamo-multimodal` version with
+`features = ["media-decode"]`; add `"video"` only when video is needed.
+The initial publication procedure is in `../RELEASING.md`. Fork integration
+must pin an immutable revision until a release containing these APIs exists.
+There is no standalone Python package; Dynamo continues using its existing
+bindings, wheels and editable builds.
+
+Build prerequisites are the repository Rust toolchain, a C/C++ toolchain and
+CMake. The existing Pillow-compatible JPEG path builds `turbojpeg-sys` from
+source; NASM enables SIMD on x86. The Dynamo-compatible path dynamically
+loads optional system `libturbojpeg.so.0` (or its existing macOS candidates),
+and falls back to ImageReader when absent. These JPEG paths remain distinct.
+Image-only builds require no FFmpeg headers, libraries or executable.
+
+For video, install pkg-config, libclang and FFmpeg 9 development headers and
+shared libraries. Use `PKG_CONFIG_PATH` at build time and the normal runtime
+loader configuration for `libavcodec`, `libavdevice`, `libavfilter`,
+`libavformat`, `libavutil`, `libswresample` and `libswscale`.
+`bash multimodal/build-ffmpeg.sh /absolute/prefix` builds the same restricted
+FFmpeg 9.0.1 codec surface as Dynamo, with libvpx 1.14.1; it also needs curl,
+tar, make and Yasm/NASM. Set `PKG_CONFIG_PATH=/absolute/prefix/lib/pkgconfig`
+and `LD_LIBRARY_PATH=/absolute/prefix/lib` when using this local build.
+The script preserves `_dynamo` library names and canonical pkg-config aliases.
+
+The supported in-tree video inputs are VP8/VP9 in MP4/WebM/Matroska.
+The script retains `--disable-gpl --disable-nonfree --enable-shared
+--disable-static`, the decoder/parser/protocol allowlists, and codec scans.
+Do not enable FFmpeg's vendored-build, GPL or nonfree Cargo features. No new
+codec support is introduced by this extraction.
+
+### Attribution and distribution
+
+`LICENSE` and `NOTICE` preserve the extraction's Apache-2.0 attribution.
+`NOTICE-libjpeg-turbo` and `NOTICE-libjpeg-ijg` carry the native JPEG notices
+and full upstream terms. This software is based in part on the work of the
+Independent JPEG Group. Rust dependency policy checks also cover the optional
+FFmpeg binding crates, with narrowly scoped WTFPL exceptions matching the
+bindings already used by Dynamo.
+
+The native FFmpeg distribution remains shared-linked. Distributors must keep
+the applicable native notices, license texts and corresponding source artifacts
+with their existing distribution mechanism. The native build script retains
+the source archives and extracted trees in `prefix/src`; Dynamo's containers
+retain their existing FFmpeg source, NOTICES/SBOM and codec-policy pipeline.
+Cargo license checks alone do not audit native binaries or wheel-bundled code.
+
+### Decoder validation
+
+```bash
+cargo test -p dynamo-multimodal --no-default-features --locked
+cargo test -p dynamo-multimodal --no-default-features --features media-decode --locked
+cargo test -p dynamo-multimodal --all-features --locked
+cargo clippy -p dynamo-multimodal --all-targets --all-features --locked -- -D warnings
+cargo deny --all-features check bans licenses
+cargo package -p dynamo-multimodal --locked
+```
+
+Run image tests both with and without a loadable system TurboJPEG. The
+existing armed/unarmed pool test binaries also exercise the new image batches.
+The packaged tests and media fixtures allow these checks outside the workspace.
 
 ## 2. The API, by consumer
 
